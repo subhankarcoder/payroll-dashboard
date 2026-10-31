@@ -27,4 +27,5 @@ const parseServerEnv = () => {
 };
 
 export const serverEnv = parseServerEnv();
+// fallow-ignore-next-line unused-type
 export type ServerEnv = z.infer<typeof serverEnvSchema>;

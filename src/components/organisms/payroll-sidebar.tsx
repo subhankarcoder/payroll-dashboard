@@ -15,7 +15,7 @@ import {
   FileText,
   LogOut,
 } from 'lucide-react';
-import { setAuthToken } from '@/lib/client/api-client';
+import { clearAuthTokens } from '@/lib/client/api-client';
 
 const MAIN_NAV_ITEMS = [
   { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -51,7 +51,7 @@ export function PayrollSidebar() {
   }, []);
 
   const handleSignOut = () => {
-    setAuthToken(null);
+    clearAuthTokens();
     if (typeof window !== 'undefined') {
       localStorage.removeItem('payroll_jwt_token');
       localStorage.removeItem('hr-dashboard-token');

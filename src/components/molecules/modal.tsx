@@ -7,9 +7,10 @@ export interface ModalProps {
   onClose: () => void;
   title: string;
   children: ReactNode;
+  maxWidth?: string;
 }
 
-export function Modal({ isOpen, onClose, title, children }: ModalProps) {
+export function Modal({ isOpen, onClose, title, children, maxWidth = '500px' }: ModalProps) {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -55,7 +56,7 @@ export function Modal({ isOpen, onClose, title, children }: ModalProps) {
       <div
         style={{
           width: '100%',
-          maxWidth: '500px',
+          maxWidth,
           backgroundColor: 'hsl(var(--bg-surface))',
           border: '1px solid hsl(var(--border-subtle))',
           borderRadius: 'var(--radius-lg)',
@@ -99,6 +100,8 @@ export function Modal({ isOpen, onClose, title, children }: ModalProps) {
               fontSize: 'var(--font-size-lg)',
               borderRadius: 'var(--radius-sm)',
               cursor: 'pointer',
+              background: 'none',
+              border: 'none',
             }}
           >
             ✕

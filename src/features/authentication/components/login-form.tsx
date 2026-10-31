@@ -72,8 +72,8 @@ export function LoginForm() {
 
       const { accessToken, refreshToken, user } = result;
 
-      // 2. Persist tokens & user session across storage keys
-      setAuthToken(accessToken);
+      // 2. Persist tokens & user session across storage keys (15m standard access TTL)
+      setAuthToken(accessToken, 900);
       if (refreshToken) {
         setRefreshToken(refreshToken);
       }

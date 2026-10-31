@@ -20,24 +20,6 @@ export interface LoginResult {
   forceChange?: boolean;
 }
 
-export interface UserPermissionItem {
-  id?: string;
-  subject: string;
-  action: string;
-  conditions?: Record<string, unknown> | null;
-}
-
-export interface UserPermissionsResponse {
-  permissions?: UserPermissionItem[];
-  roles?: string[];
-  isSuperAdmin?: boolean;
-}
-
-export interface AuthState {
-  readonly user: UserSession | null;
-  readonly isAuthenticated: boolean;
-}
-
 export type AuthActionResult =
   | { readonly success: true; readonly user: UserSession }
   | {

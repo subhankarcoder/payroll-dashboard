@@ -52,6 +52,7 @@ export function getStatusBadgeVariant(status?: string): BadgeVariant {
     case 'FINALIZED':
     case 'APPROVED':
     case 'ACTIVE':
+    case 'POSTED':
       return 'success';
     case 'CALCULATED':
     case 'UNDER_REVIEW':
@@ -62,7 +63,10 @@ export function getStatusBadgeVariant(status?: string): BadgeVariant {
       return 'warning';
     case 'CANCELLED':
     case 'ARCHIVED':
+    case 'REVERSED':
       return 'danger';
+    case 'COMPLETED':
+      return 'purple';
     default:
       return 'default';
   }

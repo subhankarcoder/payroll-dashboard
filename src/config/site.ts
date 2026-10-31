@@ -1,4 +1,4 @@
-export interface NavItem {
+interface NavItem {
   readonly title: string;
   readonly href: string;
   readonly disabled?: boolean;
@@ -20,5 +20,3 @@ export const siteConfig = {
     docs: '/docs',
   },
 } as const;
-
-export type SiteConfig = typeof siteConfig;

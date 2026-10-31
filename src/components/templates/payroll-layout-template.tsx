@@ -5,7 +5,12 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { PayrollSidebar } from '@/components/organisms/payroll-sidebar';
 import { PayrollHeader } from '@/components/organisms/payroll-header';
-import { getAuthToken, getWorkspaceId, setAuthToken } from '@/lib/client/api-client';
+import {
+  getWorkspaceId,
+  getAuthToken,
+  ensureValidAuthToken,
+  clearAuthTokens,
+} from '@/lib/client/api-client';
 import { verifyPayrollAccess } from '@/lib/client/auth-guard';
 
 export interface PayrollLayoutTemplateProps {
@@ -19,36 +24,52 @@ const PAYROLL_NAV_TABS = [
   { label: 'Salary Components', href: '/payroll/components' },
   { label: 'Configuration', href: '/payroll/configuration' },
   { label: 'Payslips', href: '/payroll/payslips' },
+  { label: 'Advance Salary', href: '/payroll/advances' },
 ];
 
 export function PayrollLayoutTemplate({ children }: PayrollLayoutTemplateProps) {
   const pathname = usePathname();
   const router = useRouter();
 
+  // Route protection and access verification
   useEffect(() => {
-    const token = getAuthToken();
-    if (!token) {
-      router.push('/login');
-      return;
-    }
+    let isMounted = true;
 
-    if (typeof window !== 'undefined') {
-      const storedUserJson = localStorage.getItem('user') || localStorage.getItem('payroll_user');
-      if (storedUserJson) {
-        try {
-          const user = JSON.parse(storedUserJson);
-          const wsId = getWorkspaceId();
-          verifyPayrollAccess(user, token, wsId).then((hasAccess) => {
-            if (!hasAccess) {
-              setAuthToken(null);
+    async function checkAuth() {
+      let token = getAuthToken();
+      if (!token) {
+        token = await ensureValidAuthToken();
+      }
+      if (!token) {
+        if (isMounted) {
+          router.push('/login');
+        }
+        return;
+      }
+
+      if (typeof window !== 'undefined') {
+        const storedUserJson = localStorage.getItem('user') || localStorage.getItem('payroll_user');
+        if (storedUserJson) {
+          try {
+            const user = JSON.parse(storedUserJson);
+            const wsId = getWorkspaceId();
+            const hasAccess = await verifyPayrollAccess(user, token, wsId);
+            if (!hasAccess && isMounted) {
+              clearAuthTokens();
               router.push('/login?error=access_denied');
             }
-          });
-        } catch {
-          // Ignore JSON parse errors
+          } catch {
+            // Ignore JSON parse errors
+          }
         }
       }
     }
+
+    checkAuth();
+
+    return () => {
+      isMounted = false;
+    };
   }, [router, pathname]);
 
   return (

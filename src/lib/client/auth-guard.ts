@@ -1,4 +1,4 @@
-import { clientEnv } from '@/lib/env/client';
+import { fetchApi } from './api-client';
 
 export type AuthUserSummary = {
   id: string;
@@ -13,7 +13,7 @@ export type AuthUserSummary = {
   roles?: string[];
 };
 
-export type PermissionItem = {
+type PermissionItem = {
   id?: string;
   code?: string;
   name?: string;
@@ -38,17 +38,6 @@ type AuthPayload = {
       };
 };
 
-function buildApiUrl(path: string): string {
-  const rawApiBase = clientEnv.NEXT_PUBLIC_API_URL || 'http://localhost:3002';
-  const apiBase = rawApiBase.replace(/\/+$/, '');
-  const cleanPath = path.startsWith('/') ? path : `/${path}`;
-
-  if (apiBase.endsWith('/api/v1') && cleanPath.startsWith('/api/v1')) {
-    return `${apiBase}${cleanPath.slice(7)}`;
-  }
-  return `${apiBase}${cleanPath}`;
-}
-
 /**
  * Verifies if the authenticated user has permissions to access the Payroll module.
  * Super Admins receive full access. Other users MUST have the PAYROLL_ADMIN / SUPER_ADMIN role
@@ -67,20 +56,12 @@ export async function verifyPayrollAccess(
   // 2. Query live workspace permissions from the backend authorization service
   if (workspaceId && user.id) {
     try {
-      const permEndpoint = buildApiUrl(
-        `/api/v1/authorization/users/${user.id}/permissions?workspaceId=${workspaceId}`,
-      );
-      const res = await fetch(permEndpoint, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'x-workspace-id': workspaceId,
-        },
-      });
+      const permEndpoint = `/api/v1/authorization/users/${user.id}/permissions?workspaceId=${workspaceId}`;
+      const permData = await fetchApi<AuthPayload>(permEndpoint, {
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+      }).catch(() => null);
 
-      if (res.ok) {
-        const permData = (await res.json().catch(() => null)) as AuthPayload | null;
-        if (!permData) return false;
-
+      if (permData) {
         const rawData = permData.data ?? permData;
 
         // Check if user is super admin in live DB response

@@ -1,7 +1,7 @@
 import { Check } from 'lucide-react';
 import type { PayrollRunStatus } from '@/types/payroll';
 
-export interface StepItem {
+interface StepItem {
   id: number;
   key: PayrollRunStatus;
   title: string;

@@ -7,6 +7,8 @@ import {
   setRefreshToken,
   getRefreshToken,
   clearAuthTokens,
+  isTokenExpiring,
+  ensureValidAuthToken,
 } from '../api-client';
 
 describe('Centralized API Client (AGENTS.md Rule 14)', () => {
@@ -115,5 +117,30 @@ describe('Centralized API Client (AGENTS.md Rule 14)', () => {
     await expect(fetchApi('/api/v1/payroll/runs')).rejects.toThrow(ApiClientError);
     expect(getAuthToken()).toBeNull();
     expect(getRefreshToken()).toBeNull();
+  });
+
+  it('should correctly evaluate token expiration for opaque tokens and proactive refresh', async () => {
+    // Set token with 1 second expiry
+    setAuthToken('short_lived_opaque_token', 1);
+    setRefreshToken('valid_refresh_token');
+
+    // Should detect token is expiring
+    expect(isTokenExpiring(5)).toBe(true);
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        status: 'success',
+        data: {
+          accessToken: 'proactively_refreshed_token',
+          refreshToken: 'rotated_refresh_token',
+        },
+      }),
+    } as unknown as Response);
+
+    const validToken = await ensureValidAuthToken();
+    expect(validToken).toBe('proactively_refreshed_token');
+    expect(getAuthToken()).toBe('proactively_refreshed_token');
   });
 });

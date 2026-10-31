@@ -5,6 +5,8 @@ import {
   evaluateRunItems,
   computeRunAggregates,
   enrichRunWithItemAggregates,
+  isExecutiveEmployee,
+  isAttendanceExempt,
 } from '../utils/payroll-calculator';
 import { SalaryStructureService } from '../services/salary-structure.service';
 import type { PayrollRun, PayrollRunItem, SalaryStructure } from '@/types/payroll';
@@ -329,6 +331,153 @@ describe('Payroll Calculator Utility', () => {
 
       const enriched = enrichRunWithItemAggregates(run, []);
       expect(enriched).toEqual(run);
+    });
+  });
+
+  describe('Executive Attendance Exemption and isAttendanceExempt', () => {
+    it('identifies executive employees via role, designation, or boolean flag', () => {
+      const execWithRole: PayrollRunItem = {
+        ...baseItem,
+        employee: {
+          firstName: 'Alice',
+          lastName: 'Leader',
+          employeeCode: 'EXEC-001',
+          email: 'alice@company.com',
+          role: 'SUPER_ADMIN',
+        },
+      };
+      expect(isExecutiveEmployee(execWithRole)).toBe(true);
+
+      const execWithDesignation: PayrollRunItem = {
+        ...baseItem,
+        employee: {
+          firstName: 'Bob',
+          lastName: 'Boss',
+          employeeCode: 'EXEC-002',
+          email: 'bob@company.com',
+          designation: 'Chief Executive Officer (CEO)',
+        },
+      };
+      expect(isExecutiveEmployee(execWithDesignation)).toBe(true);
+
+      const execWithFlag: PayrollRunItem = {
+        ...baseItem,
+        isExecutive: true,
+      };
+      expect(isExecutiveEmployee(execWithFlag)).toBe(true);
+
+      const normalEmployee: PayrollRunItem = {
+        ...baseItem,
+        employee: {
+          firstName: 'Charlie',
+          lastName: 'Dev',
+          employeeCode: 'DEV-001',
+          email: 'charlie@company.com',
+          role: 'EMPLOYEE',
+          designation: 'Software Engineer',
+        },
+      };
+      expect(isExecutiveEmployee(normalEmployee)).toBe(false);
+    });
+
+    it('confirms Attendance Exempt (100% Full Pay) when executive has 0 LOP and full payable days', () => {
+      const exemptExec: PayrollRunItem = {
+        ...baseItem,
+        payableDays: 30,
+        presentDays: 30,
+        lopDays: 0,
+        employee: {
+          firstName: 'David',
+          lastName: 'Executive',
+          employeeCode: 'CEO-01',
+          email: 'david@corp.com',
+          role: 'SUPER_ADMIN',
+          designation: 'CEO',
+        },
+      };
+
+      expect(isAttendanceExempt(exemptExec, 30)).toBe(true);
+    });
+
+    it('returns false for attendance exemption if employee has non-zero LOP days', () => {
+      const execWithLop: PayrollRunItem = {
+        ...baseItem,
+        payableDays: 28,
+        lopDays: 2,
+        employee: {
+          firstName: 'David',
+          lastName: 'Executive',
+          employeeCode: 'CEO-01',
+          email: 'david@corp.com',
+          role: 'SUPER_ADMIN',
+        },
+      };
+
+      expect(isAttendanceExempt(execWithLop, 30)).toBe(false);
+    });
+
+    it('returns false for attendance exemption if employee is not an executive even with 0 LOP', () => {
+      const normalStaff: PayrollRunItem = {
+        ...baseItem,
+        payableDays: 30,
+        lopDays: 0,
+        employee: {
+          firstName: 'Emma',
+          lastName: 'Analyst',
+          employeeCode: 'EMP-05',
+          email: 'emma@corp.com',
+          designation: 'HR Associate',
+        },
+      };
+
+      expect(isAttendanceExempt(normalStaff, 30)).toBe(false);
+    });
+  });
+
+  describe('Manual Line-Item Adjustments and Recalculations', () => {
+    it('recalculates netSalary incorporating manual earnings, deductions, and adjustments', () => {
+      const itemWithManualAdjustment: PayrollRunItem = {
+        ...baseItem,
+        grossEarnings: 100000,
+        totalDeductions: 10000,
+        manualEarnings: 5000,
+        manualDeductions: 1000,
+        manualAdjustment: 4000,
+        notes: 'Executive performance incentive approved by Board',
+      };
+
+      const result = evaluateRunItemWithStructure(itemWithManualAdjustment, null, 30);
+      // Net Salary = grossSalary + manualEarnings - totalDeductions - manualDeductions
+      // 100000 + 5000 - 10000 - 1000 = 94000
+      expect(result.netPay).toBe(94000);
+      expect(result.manualAdjustment).toBe(4000);
+      expect(result.manualEarnings).toBe(5000);
+      expect(result.manualDeductions).toBe(1000);
+      expect(result.notes).toBe('Executive performance incentive approved by Board');
+    });
+
+    it('correctly sets attendanceExempt and calculates executive item with structure', () => {
+      const execItem: PayrollRunItem = {
+        ...baseItem,
+        payableDays: 30,
+        presentDays: 30,
+        lopDays: 0,
+        employee: {
+          firstName: 'Ashish',
+          lastName: 'Kumar',
+          employeeCode: 'DIR-01',
+          email: 'ashish@das.com',
+          role: 'SUPER_ADMIN',
+          designation: 'Managing Director',
+        },
+      };
+
+      const result = evaluateRunItemWithStructure(execItem, monthlyStructure, 30);
+      expect(result.attendanceExempt).toBe(true);
+      expect(result.isExempt).toBe(true);
+      expect(result.lopDays).toBe(0);
+      expect(result.grossEarnings).toBe(47000);
+      expect(result.netPay).toBe(43200);
     });
   });
 });

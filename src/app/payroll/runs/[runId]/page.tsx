@@ -13,6 +13,7 @@ import {
   Search,
   Edit3,
   CalendarCheck,
+  ShieldCheck,
 } from 'lucide-react';
 import { Badge } from '@/components/atoms/badge';
 import { Button } from '@/components/atoms/button';
@@ -51,7 +52,10 @@ const MONTH_NAMES = [
   'December',
 ];
 
-import { evaluateRunItemWithStructure } from '@/features/payroll/utils/payroll-calculator';
+import {
+  evaluateRunItemWithStructure,
+  isAttendanceExempt,
+} from '@/features/payroll/utils/payroll-calculator';
 
 export default function PayrollRunDetailPage({ params }: { params: Promise<{ runId: string }> }) {
   const router = useRouter();
@@ -79,12 +83,15 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
   const [selectedItem, setSelectedItem] = useState<PayrollRunItem | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
+  const [correctionSuccess, setCorrectionSuccess] = useState<string | null>(null);
   const [correctionForm, setCorrectionForm] = useState<CorrectPayrollItemInput>({
     payableDays: 30,
     presentDays: 30,
     lopDays: 0,
     manualEarnings: 0,
     manualDeductions: 0,
+    manualAdjustment: 0,
     remarks: '',
     notes: '',
   });
@@ -123,7 +130,7 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
           limit,
           search: searchQuery || undefined,
         }),
-        EmployeeLookupService.searchEmployees('', 200).catch(() => []),
+        EmployeeLookupService.searchEmployees('', 100).catch(() => []),
       ]);
 
       const empMap = new Map<string, EmployeeSummary>();
@@ -133,6 +140,27 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
 
       const rawItems = data.data || [];
       const daysInPeriod = new Date(periodYear, periodMonth, 0).getDate();
+
+      // Fallback: If any employee in the payroll run items is not in empMap, fetch by ID
+      const missingEmpIds = Array.from(
+        new Set(rawItems.map((item) => item.employeeId).filter((id) => id && !empMap.has(id))),
+      );
+
+      if (missingEmpIds.length > 0) {
+        await Promise.all(
+          missingEmpIds.map(async (empId) => {
+            try {
+              const emp = await EmployeeLookupService.getEmployeeById(empId);
+              if (emp) {
+                empMap.set(emp.id, emp);
+                empMap.set(empId, emp);
+              }
+            } catch {
+              // Ignore individual lookup errors
+            }
+          }),
+        );
+      }
 
       // Fetch active structures for each employee in batch
       const structurePromises = rawItems.map((item) =>
@@ -155,16 +183,14 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
 
         return {
           ...evaluated,
-          employee:
-            evaluated.employee ||
-            (emp
-              ? {
-                  firstName: emp.firstName,
-                  lastName: emp.lastName,
-                  employeeCode: emp.employeeCode,
-                  email: emp.email,
-                }
-              : undefined),
+          employee: emp
+            ? {
+                firstName: emp.firstName,
+                lastName: emp.lastName,
+                employeeCode: emp.employeeCode,
+                email: emp.email,
+              }
+            : evaluated.employee,
         };
       });
 
@@ -230,7 +256,7 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
     }
   };
 
-  const handleOpenItemDrawer = async (item: PayrollRunItem) => {
+  const handleOpenItemDrawer = async (item: PayrollRunItem, editMode: boolean = false) => {
     const daysInPeriod = run ? new Date(run.periodYear, run.periodMonth, 0).getDate() : 30;
     const initialLop = item.lopDays !== undefined ? Number(item.lopDays) : 0;
     const initialPresent =
@@ -243,16 +269,21 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
         : Math.max(0, daysInPeriod - initialLop);
 
     setSelectedItem(item);
-    setIsEditing(false);
+    setIsEditing(editMode);
+    setCorrectionError(null);
+    setCorrectionSuccess(null);
     setCorrectionForm({
       payableDays: initialPayable,
       presentDays: initialPresent,
       lopDays: initialLop,
       overtimeHours: Number(item.overtimeHours) || 0,
-      manualEarnings: 0,
-      manualDeductions: 0,
-      remarks: item.remarks || '',
-      notes: item.notes || '',
+      manualEarnings: Number(item.manualEarnings) || 0,
+      manualDeductions: Number(item.manualDeductions) || 0,
+      manualAdjustment:
+        Number(item.manualAdjustment) ||
+        (Number(item.manualEarnings) || 0) - (Number(item.manualDeductions) || 0),
+      remarks: item.remarks || item.notes || '',
+      notes: item.notes || item.remarks || '',
     });
     setIsDrawerOpen(true);
 
@@ -276,22 +307,56 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
         presentDays: evaluated.presentDays,
         lopDays: evaluated.lopDays,
         overtimeHours: Number(freshItem.overtimeHours) || 0,
+        manualEarnings:
+          Number(freshItem.manualEarnings ?? evaluated.manualEarnings ?? prev.manualEarnings) || 0,
+        manualDeductions:
+          Number(
+            freshItem.manualDeductions ?? evaluated.manualDeductions ?? prev.manualDeductions,
+          ) || 0,
+        manualAdjustment:
+          Number(
+            freshItem.manualAdjustment ?? evaluated.manualAdjustment ?? prev.manualAdjustment,
+          ) || 0,
+        notes: freshItem.notes || evaluated.notes || prev.notes || '',
+        remarks: freshItem.remarks || evaluated.remarks || prev.remarks || '',
       }));
     } catch (e) {
       console.warn('Could not fetch fresh item detail:', e);
     }
   };
 
-  const handleSaveCorrection = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSaveCorrection = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!selectedItem) return;
+
+    const manualEarnings = Number(correctionForm.manualEarnings) || 0;
+    const manualDeductions = Number(correctionForm.manualDeductions) || 0;
+    const manualAdjustment = manualEarnings - manualDeductions;
+    const notesText = (correctionForm.notes || correctionForm.remarks || '').trim();
+
+    // Validation: Adjustment Remarks / Notes are mandatory when manual adjustment is non-zero
+    if (manualAdjustment !== 0 || manualEarnings > 0 || manualDeductions > 0) {
+      if (!notesText) {
+        setCorrectionError(
+          'Adjustment Remarks / Notes are mandatory when manual adjustment is non-zero.',
+        );
+        return;
+      }
+    }
+
+    setCorrectionError(null);
     setIsSavingCorrection(true);
     try {
-      const updatedItem = await PayrollItemService.correctItem(
-        runId,
-        selectedItem.id,
-        correctionForm,
-      );
+      const payload: CorrectPayrollItemInput = {
+        ...correctionForm,
+        manualEarnings,
+        manualDeductions,
+        manualAdjustment,
+        notes: notesText,
+        remarks: notesText,
+      };
+
+      const updatedItem = await PayrollItemService.correctItem(runId, selectedItem.id, payload);
 
       const daysInPeriod = run ? new Date(run.periodYear, run.periodMonth, 0).getDate() : 30;
       const actStruct = await SalaryStructureService.getActiveStructure(
@@ -299,16 +364,34 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
       ).catch(() => null);
       const evaluated = evaluateRunItemWithStructure(updatedItem, actStruct, daysInPeriod);
 
-      setSelectedItem({
+      const mergedItem: PayrollRunItem = {
         ...evaluated,
+        manualEarnings,
+        manualDeductions,
+        manualAdjustment,
+        notes: notesText,
+        remarks: notesText,
+        netPay:
+          updatedItem.netSalary ??
+          updatedItem.netPay ??
+          evaluated.grossEarnings + manualEarnings - evaluated.totalDeductions - manualDeductions,
         employee: evaluated.employee || selectedItem.employee,
-      });
+      };
+
+      // Instantly update the table items state and recalculated Net Salary!
+      setItems((prevItems) => prevItems.map((it) => (it.id === selectedItem.id ? mergedItem : it)));
+      setSelectedItem(mergedItem);
       setIsEditing(false);
+      setCorrectionSuccess(
+        'Manual adjustment saved successfully. Table row and Net Salary recalculated.',
+      );
+
       // Refresh items list and run totals
       await fetchItems();
       await fetchRun();
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : 'Failed to save correction');
+      const msg = err instanceof Error ? err.message : 'Failed to save correction';
+      setCorrectionError(msg);
     } finally {
       setIsSavingCorrection(false);
     }
@@ -316,6 +399,8 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
 
   const isFinalized = run?.status === 'FINALIZED';
   const isCancelled = run?.status === 'CANCELLED';
+
+  const daysInPeriod = run ? new Date(run.periodYear, run.periodMonth, 0).getDate() : 30;
 
   const columns: Column<PayrollRunItem>[] = [
     {
@@ -326,6 +411,9 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
         const lastName = item.employee?.lastName || '';
         const code = item.employee?.employeeCode || item.employeeId.slice(0, 8);
         const email = item.employee?.email || '';
+        const isExempt =
+          item.isExempt ?? item.attendanceExempt ?? isAttendanceExempt(item, daysInPeriod);
+
         return (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
             <div
@@ -333,8 +421,8 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                 width: '32px',
                 height: '32px',
                 borderRadius: '50%',
-                backgroundColor: '#eef2ff',
-                color: '#4f46e5',
+                backgroundColor: isExempt ? '#ecfdf5' : '#eef2ff',
+                color: isExempt ? '#059669' : '#4f46e5',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -346,8 +434,32 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
               {firstName[0] || 'E'}
             </div>
             <div>
-              <div style={{ fontWeight: 600, color: '#0f172a' }}>
-                {firstName} {lastName}
+              <div
+                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}
+              >
+                <span style={{ fontWeight: 600, color: '#0f172a' }}>
+                  {firstName} {lastName}
+                </span>
+                {isExempt && (
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.25rem',
+                      padding: '0.125rem 0.5rem',
+                      borderRadius: '9999px',
+                      backgroundColor: '#ecfdf5',
+                      color: '#047857',
+                      border: '1px solid #a7f3d0',
+                      fontSize: '0.6875rem',
+                      fontWeight: 600,
+                      lineHeight: '1rem',
+                    }}
+                  >
+                    <ShieldCheck size={11} />
+                    Attendance Exempt (100% Full Pay)
+                  </span>
+                )}
               </div>
               <div style={{ fontSize: '0.6875rem', color: '#64748b' }}>
                 {code} {email && `• ${email}`}
@@ -361,26 +473,48 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
       key: 'presentDays',
       header: 'Present / Pay Days',
       align: 'center',
-      render: (item) => (
-        <div style={{ fontSize: '0.8125rem', color: '#334155' }}>
-          <span style={{ fontWeight: 600 }}>{item.presentDays}</span> / {item.payableDays}
-        </div>
-      ),
+      render: (item) => {
+        const isExempt =
+          item.isExempt ?? item.attendanceExempt ?? isAttendanceExempt(item, daysInPeriod);
+
+        return (
+          <div style={{ fontSize: '0.8125rem', color: '#334155' }}>
+            <div>
+              <span style={{ fontWeight: 600 }}>{item.presentDays}</span> / {item.payableDays}
+            </div>
+            {isExempt && (
+              <div style={{ fontSize: '0.6875rem', color: '#059669', fontWeight: 600 }}>
+                100% Full Pay
+              </div>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: 'lopDays',
       header: 'LOP',
       align: 'center',
-      render: (item) => (
-        <span
-          style={{
-            fontWeight: item.lopDays > 0 ? 700 : 500,
-            color: item.lopDays > 0 ? '#dc2626' : '#64748b',
-          }}
-        >
-          {item.lopDays} d
-        </span>
-      ),
+      render: (item) => {
+        const isExempt =
+          item.isExempt ?? item.attendanceExempt ?? isAttendanceExempt(item, daysInPeriod);
+
+        return (
+          <div>
+            <span
+              style={{
+                fontWeight: item.lopDays > 0 ? 700 : 500,
+                color: item.lopDays > 0 ? '#dc2626' : '#64748b',
+              }}
+            >
+              {item.lopDays} d
+            </span>
+            {isExempt && (
+              <div style={{ fontSize: '0.6875rem', color: '#059669', fontWeight: 600 }}>Exempt</div>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: 'overtimeHours',
@@ -416,11 +550,33 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
       key: 'netPay',
       header: 'Net Pay',
       align: 'right',
-      render: (item) => (
-        <span className="tabular-nums" style={{ fontWeight: 700, color: '#059669' }}>
-          {formatCurrency(item.netPay)}
-        </span>
-      ),
+      render: (item) => {
+        const manualAdj =
+          item.manualAdjustment !== undefined && item.manualAdjustment !== null
+            ? Number(item.manualAdjustment)
+            : (Number(item.manualEarnings) || 0) - (Number(item.manualDeductions) || 0);
+
+        return (
+          <div>
+            <span className="tabular-nums" style={{ fontWeight: 700, color: '#059669' }}>
+              {formatCurrency(item.netPay)}
+            </span>
+            {manualAdj !== 0 && (
+              <div
+                style={{
+                  fontSize: '0.6875rem',
+                  fontWeight: 600,
+                  color: manualAdj > 0 ? '#047857' : '#dc2626',
+                }}
+              >
+                {manualAdj > 0
+                  ? `+${formatCurrency(manualAdj)} manual`
+                  : `${formatCurrency(manualAdj)} manual`}
+              </div>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: 'totalEmployerCost',
@@ -443,22 +599,57 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
       header: 'Action',
       align: 'right',
       render: (item) => (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            handleOpenItemDrawer(item);
-          }}
+        <div
           style={{
-            padding: '0.35rem 0.65rem',
-            borderRadius: 'var(--radius-md)',
-            backgroundColor: '#f1f5f9',
-            color: '#334155',
-            fontSize: '0.75rem',
-            fontWeight: 600,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: '0.375rem',
           }}
         >
-          Review
-        </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleOpenItemDrawer(item, false);
+            }}
+            style={{
+              padding: '0.35rem 0.65rem',
+              borderRadius: 'var(--radius-md)',
+              backgroundColor: '#f1f5f9',
+              color: '#334155',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              border: '1px solid #e2e8f0',
+            }}
+          >
+            Review
+          </button>
+          {!isFinalized && !isCancelled && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleOpenItemDrawer(item, true);
+              }}
+              style={{
+                padding: '0.35rem 0.65rem',
+                borderRadius: 'var(--radius-md)',
+                backgroundColor: '#eef2ff',
+                color: '#4f46e5',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                cursor: 'pointer',
+                border: '1px solid #c7d2fe',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.25rem',
+              }}
+            >
+              <Edit3 size={12} />
+              <span>Adjust Item</span>
+            </button>
+          )}
+        </div>
       ),
     },
   ];
@@ -901,6 +1092,11 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
               parseFloat(String(selectedItem.netPay ?? rawSelected.net_pay ?? grossVal - dedVal)) ||
               0;
 
+            const isExempt =
+              selectedItem.isExempt ??
+              selectedItem.attendanceExempt ??
+              isAttendanceExempt(selectedItem, daysInPeriod);
+
             return (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
                 {/* Attendance Snapshot */}
@@ -949,7 +1145,13 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                     </div>
                     <div>
                       <div style={{ fontSize: '0.6875rem', color: '#64748b' }}>LOP Days</div>
-                      <div style={{ fontSize: '1rem', fontWeight: 700, color: '#dc2626' }}>
+                      <div
+                        style={{
+                          fontSize: '1rem',
+                          fontWeight: 700,
+                          color: selectedItem.lopDays > 0 ? '#dc2626' : '#059669',
+                        }}
+                      >
                         {selectedItem.lopDays}
                       </div>
                     </div>
@@ -960,20 +1162,47 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                       </div>
                     </div>
                   </div>
+
+                  {/* Executive Attendance Exemption Callout */}
+                  {isExempt && (
+                    <div
+                      style={{
+                        marginTop: '0.75rem',
+                        padding: '0.625rem 0.875rem',
+                        backgroundColor: '#ecfdf5',
+                        border: '1px solid #a7f3d0',
+                        borderRadius: 'var(--radius-sm)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        color: '#065f46',
+                        fontSize: '0.75rem',
+                      }}
+                    >
+                      <ShieldCheck size={16} color="#059669" style={{ flexShrink: 0 }} />
+                      <div>
+                        <div style={{ fontWeight: 700 }}>Attendance Exempt (100% Full Pay)</div>
+                        <div style={{ color: '#047857', marginTop: '0.125rem' }}>
+                          Executive leadership is exempt from daily punch attendance. 100% base
+                          salary is disbursed without Loss of Pay (LOP) deductions.
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {/* Manual Correction Form if Editing Mode */}
+                {/* Manual Adjustment Form when in Editing Mode */}
                 {isEditing && (
                   <form
                     onSubmit={handleSaveCorrection}
                     style={{
-                      backgroundColor: '#fffbeb',
-                      border: '1px solid #fde68a',
+                      backgroundColor: '#f8fafc',
+                      border: '1px solid #cbd5e1',
                       borderRadius: 'var(--radius-md)',
-                      padding: '1rem',
+                      padding: '1.25rem',
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: '0.875rem',
+                      gap: '1rem',
                     }}
                   >
                     <div
@@ -983,19 +1212,57 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                         justifyContent: 'space-between',
                       }}
                     >
-                      <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#92400e' }}>
-                        Manual Attendance & Wage Adjustment
+                      <div
+                        style={{
+                          fontSize: '0.875rem',
+                          fontWeight: 700,
+                          color: '#0f172a',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.35rem',
+                        }}
+                      >
+                        <Edit3 size={15} color="#4f46e5" />
+                        <span>Manual Wage & Line-Item Adjustment</span>
                       </div>
-                      <span style={{ fontSize: '0.6875rem', color: '#b45309', fontWeight: 600 }}>
-                        Month Cycle:{' '}
-                        {run ? new Date(run.periodYear, run.periodMonth, 0).getDate() : 30} Days
+                      <span style={{ fontSize: '0.6875rem', color: '#64748b', fontWeight: 600 }}>
+                        Cycle: {daysInPeriod} Days
                       </span>
                     </div>
-                    <p style={{ fontSize: '0.75rem', color: '#78350f' }}>
-                      Adjusting LOP or Present days automatically updates payable days and
-                      recalculates contractual Basic, HRA, and PF upon saving.
-                    </p>
 
+                    {correctionError && (
+                      <div
+                        style={{
+                          padding: '0.625rem 0.875rem',
+                          borderRadius: 'var(--radius-sm)',
+                          backgroundColor: '#fef2f2',
+                          border: '1px solid #fecaca',
+                          color: '#991b1b',
+                          fontSize: '0.75rem',
+                          fontWeight: 500,
+                        }}
+                      >
+                        {correctionError}
+                      </div>
+                    )}
+
+                    {correctionSuccess && (
+                      <div
+                        style={{
+                          padding: '0.625rem 0.875rem',
+                          borderRadius: 'var(--radius-sm)',
+                          backgroundColor: '#ecfdf5',
+                          border: '1px solid #a7f3d0',
+                          color: '#065f46',
+                          fontSize: '0.75rem',
+                          fontWeight: 500,
+                        }}
+                      >
+                        {correctionSuccess}
+                      </div>
+                    )}
+
+                    {/* Adjustment Inputs */}
                     <div
                       style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}
                     >
@@ -1003,96 +1270,38 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                         <label
                           style={{
                             fontSize: '0.75rem',
-                            fontWeight: 500,
-                            color: '#78350f',
+                            fontWeight: 600,
+                            color: '#334155',
                             display: 'block',
                             marginBottom: '0.25rem',
                           }}
                         >
-                          Override LOP Days
+                          Manual Additions / Earnings (₹)
                         </label>
                         <Input
                           type="number"
-                          value={correctionForm.lopDays ?? 0}
-                          onChange={(e) => {
-                            const newLop = parseFloat(e.target.value) || 0;
-                            const daysInPeriod = run
-                              ? new Date(run.periodYear, run.periodMonth, 0).getDate()
-                              : 30;
-                            const newPresent = Math.max(0, daysInPeriod - newLop);
-                            setCorrectionForm({
-                              ...correctionForm,
-                              lopDays: newLop,
-                              presentDays: newPresent,
-                              payableDays: newPresent,
-                            });
-                          }}
-                        />
-                      </div>
-                      <div>
-                        <label
-                          style={{
-                            fontSize: '0.75rem',
-                            fontWeight: 500,
-                            color: '#78350f',
-                            display: 'block',
-                            marginBottom: '0.25rem',
-                          }}
-                        >
-                          Present / Payable Days
-                        </label>
-                        <Input
-                          type="number"
-                          value={correctionForm.presentDays ?? 0}
-                          onChange={(e) => {
-                            const newPresent = parseFloat(e.target.value) || 0;
-                            const daysInPeriod = run
-                              ? new Date(run.periodYear, run.periodMonth, 0).getDate()
-                              : 30;
-                            const newLop = Math.max(0, daysInPeriod - newPresent);
-                            setCorrectionForm({
-                              ...correctionForm,
-                              presentDays: newPresent,
-                              payableDays: newPresent,
-                              lopDays: newLop,
-                            });
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <div
-                      style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}
-                    >
-                      <div>
-                        <label
-                          style={{
-                            fontSize: '0.75rem',
-                            fontWeight: 500,
-                            color: '#78350f',
-                            display: 'block',
-                            marginBottom: '0.25rem',
-                          }}
-                        >
-                          Manual Additional Earnings (₹)
-                        </label>
-                        <Input
-                          type="number"
+                          placeholder="0"
                           value={correctionForm.manualEarnings || 0}
-                          onChange={(e) =>
-                            setCorrectionForm({
-                              ...correctionForm,
-                              manualEarnings: parseFloat(e.target.value) || 0,
-                            })
-                          }
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setCorrectionForm((prev) => ({
+                              ...prev,
+                              manualEarnings: val,
+                              manualAdjustment: val - (prev.manualDeductions || 0),
+                            }));
+                            if (correctionError) setCorrectionError(null);
+                          }}
                         />
+                        <span style={{ fontSize: '0.6875rem', color: '#64748b' }}>
+                          e.g. bonus, reimbursement
+                        </span>
                       </div>
                       <div>
                         <label
                           style={{
                             fontSize: '0.75rem',
-                            fontWeight: 500,
-                            color: '#78350f',
+                            fontWeight: 600,
+                            color: '#334155',
                             display: 'block',
                             marginBottom: '0.25rem',
                           }}
@@ -1101,36 +1310,218 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                         </label>
                         <Input
                           type="number"
+                          placeholder="0"
                           value={correctionForm.manualDeductions || 0}
-                          onChange={(e) =>
-                            setCorrectionForm({
-                              ...correctionForm,
-                              manualDeductions: parseFloat(e.target.value) || 0,
-                            })
-                          }
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setCorrectionForm((prev) => ({
+                              ...prev,
+                              manualDeductions: val,
+                              manualAdjustment: (prev.manualEarnings || 0) - val,
+                            }));
+                            if (correctionError) setCorrectionError(null);
+                          }}
                         />
+                        <span style={{ fontSize: '0.6875rem', color: '#64748b' }}>
+                          e.g. voluntary deduction, recovery
+                        </span>
                       </div>
                     </div>
 
+                    {/* Live Recalculation Preview Card */}
+                    {(() => {
+                      const manualAdd = Number(correctionForm.manualEarnings) || 0;
+                      const manualDed = Number(correctionForm.manualDeductions) || 0;
+                      const netAdj = manualAdd - manualDed;
+                      const baseGross = parseFloat(String(selectedItem.grossEarnings || 0));
+                      const baseDed = parseFloat(String(selectedItem.totalDeductions || 0));
+                      const recalcNet = Math.max(0, baseGross + manualAdd - baseDed - manualDed);
+
+                      return (
+                        <div
+                          style={{
+                            backgroundColor: '#ffffff',
+                            border: '1px solid #e2e8f0',
+                            borderRadius: 'var(--radius-sm)',
+                            padding: '0.75rem',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '0.375rem',
+                            fontSize: '0.75rem',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              color: '#64748b',
+                            }}
+                          >
+                            <span>Base Gross: {formatCurrency(baseGross)}</span>
+                            <span>Base Deductions: -{formatCurrency(baseDed)}</span>
+                          </div>
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              paddingTop: '0.35rem',
+                              borderTop: '1px dashed #e2e8f0',
+                            }}
+                          >
+                            <span style={{ fontWeight: 600, color: '#334155' }}>
+                              Net Manual Adjustment:
+                            </span>
+                            <span
+                              style={{
+                                fontWeight: 700,
+                                color: netAdj > 0 ? '#059669' : netAdj < 0 ? '#dc2626' : '#64748b',
+                              }}
+                            >
+                              {netAdj > 0 ? `+${formatCurrency(netAdj)}` : formatCurrency(netAdj)}
+                            </span>
+                          </div>
+                          <div
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              paddingTop: '0.35rem',
+                              borderTop: '1px solid #e2e8f0',
+                            }}
+                          >
+                            <span style={{ fontWeight: 700, color: '#0f172a' }}>
+                              Recalculated Net Salary:
+                            </span>
+                            <span
+                              style={{ fontWeight: 800, fontSize: '0.9375rem', color: '#059669' }}
+                            >
+                              {formatCurrency(recalcNet)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Adjustment Remarks / Notes */}
                     <div>
-                      <label
+                      <div
                         style={{
-                          fontSize: '0.75rem',
-                          fontWeight: 500,
-                          color: '#78350f',
-                          display: 'block',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
                           marginBottom: '0.25rem',
                         }}
                       >
-                        Remarks / Audit Reason
-                      </label>
+                        <label
+                          style={{
+                            fontSize: '0.75rem',
+                            fontWeight: 600,
+                            color: '#334155',
+                          }}
+                        >
+                          Adjustment Remarks / Notes
+                        </label>
+                        {((Number(correctionForm.manualEarnings) || 0) > 0 ||
+                          (Number(correctionForm.manualDeductions) || 0) > 0 ||
+                          (Number(correctionForm.manualAdjustment) || 0) !== 0) && (
+                          <span
+                            style={{ fontSize: '0.6875rem', color: '#dc2626', fontWeight: 600 }}
+                          >
+                            * Mandatory for adjustments
+                          </span>
+                        )}
+                      </div>
                       <Input
-                        placeholder="e.g. Adjusted 10 LOP days and 20 present days"
-                        value={correctionForm.remarks || ''}
-                        onChange={(e) =>
-                          setCorrectionForm({ ...correctionForm, remarks: e.target.value })
-                        }
+                        placeholder="e.g. Executive performance incentive approved by Board"
+                        value={correctionForm.notes || correctionForm.remarks || ''}
+                        onChange={(e) => {
+                          setCorrectionForm({
+                            ...correctionForm,
+                            notes: e.target.value,
+                            remarks: e.target.value,
+                          });
+                          if (correctionError) setCorrectionError(null);
+                        }}
                       />
+                    </div>
+
+                    {/* Attendance Day Overrides (Optional) */}
+                    <div
+                      style={{
+                        borderTop: '1px solid #e2e8f0',
+                        paddingTop: '0.75rem',
+                        marginTop: '0.25rem',
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          color: '#64748b',
+                          marginBottom: '0.5rem',
+                        }}
+                      >
+                        Attendance Day Corrections (Optional)
+                      </div>
+                      <div
+                        style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}
+                      >
+                        <div>
+                          <label
+                            style={{
+                              fontSize: '0.6875rem',
+                              fontWeight: 500,
+                              color: '#64748b',
+                              display: 'block',
+                              marginBottom: '0.25rem',
+                            }}
+                          >
+                            Override LOP Days
+                          </label>
+                          <Input
+                            type="number"
+                            value={correctionForm.lopDays ?? 0}
+                            onChange={(e) => {
+                              const newLop = parseFloat(e.target.value) || 0;
+                              const newPresent = Math.max(0, daysInPeriod - newLop);
+                              setCorrectionForm((prev) => ({
+                                ...prev,
+                                lopDays: newLop,
+                                presentDays: newPresent,
+                                payableDays: newPresent,
+                              }));
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label
+                            style={{
+                              fontSize: '0.6875rem',
+                              fontWeight: 500,
+                              color: '#64748b',
+                              display: 'block',
+                              marginBottom: '0.25rem',
+                            }}
+                          >
+                            Present / Payable Days
+                          </label>
+                          <Input
+                            type="number"
+                            value={correctionForm.presentDays ?? 0}
+                            onChange={(e) => {
+                              const newPresent = parseFloat(e.target.value) || 0;
+                              const newLop = Math.max(0, daysInPeriod - newPresent);
+                              setCorrectionForm((prev) => ({
+                                ...prev,
+                                presentDays: newPresent,
+                                payableDays: newPresent,
+                                lopDays: newLop,
+                              }));
+                            }}
+                          />
+                        </div>
+                      </div>
                     </div>
                   </form>
                 )}
@@ -1164,7 +1555,10 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                             justifyContent: 'space-between',
                             padding: '0.625rem 0.875rem',
                             borderBottom:
-                              idx < earningsList.length - 1 ? '1px solid #f1f5f9' : 'none',
+                              idx < earningsList.length - 1 ||
+                              (selectedItem.manualEarnings && selectedItem.manualEarnings > 0)
+                                ? '1px solid #f1f5f9'
+                                : 'none',
                             backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fafafa',
                             fontSize: '0.8125rem',
                           }}
@@ -1187,6 +1581,41 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                         No earnings calculated
                       </div>
                     )}
+
+                    {/* Manual Earnings Display Entry */}
+                    {selectedItem.manualEarnings && selectedItem.manualEarnings > 0 ? (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.625rem 0.875rem',
+                          backgroundColor: '#f0fdf4',
+                          borderTop: earningsList.length > 0 ? '1px solid #bbf7d0' : 'none',
+                          fontSize: '0.8125rem',
+                        }}
+                      >
+                        <div>
+                          <div style={{ color: '#166534', fontWeight: 600 }}>
+                            Manual Additional Earnings
+                          </div>
+                          {selectedItem.notes && (
+                            <div
+                              style={{
+                                fontSize: '0.6875rem',
+                                color: '#15803d',
+                                marginTop: '0.125rem',
+                              }}
+                            >
+                              Note: {selectedItem.notes}
+                            </div>
+                          )}
+                        </div>
+                        <span style={{ fontWeight: 700, color: '#16a34a' }}>
+                          + {formatCurrency(selectedItem.manualEarnings)}
+                        </span>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
@@ -1209,41 +1638,112 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                       overflow: 'hidden',
                     }}
                   >
-                    {deductionsList.length > 0 ? (
-                      deductionsList.map((entry, idx) => (
-                        <div
-                          key={idx}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            padding: '0.625rem 0.875rem',
-                            borderBottom:
-                              idx < deductionsList.length - 1 ? '1px solid #f1f5f9' : 'none',
-                            backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fafafa',
-                            fontSize: '0.8125rem',
-                          }}
-                        >
-                          <span style={{ color: '#334155' }}>
-                            {entry.name} {entry.isStatutory && '(Statutory)'}
-                          </span>
-                          <span style={{ fontWeight: 600, color: '#dc2626' }}>
-                            - {formatCurrency(entry.amount)}
-                          </span>
-                        </div>
-                      ))
-                    ) : (
+                    {/* Explicitly show that no LOP deduction was applied */}
+                    {selectedItem.lopDays === 0 && (
                       <div
                         style={{
-                          padding: '0.75rem',
-                          color: '#94a3b8',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.625rem 0.875rem',
+                          borderBottom: deductionsList.length > 0 ? '1px solid #dcfce7' : 'none',
+                          backgroundColor: '#f0fdf4',
                           fontSize: '0.8125rem',
-                          textAlign: 'center',
                         }}
                       >
-                        No deductions
+                        <span
+                          style={{
+                            color: '#166534',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.35rem',
+                          }}
+                        >
+                          <CheckCircle size={14} color="#16a34a" />
+                          <span>Loss of Pay (LOP) Deduction</span>
+                          <span
+                            style={{ fontSize: '0.6875rem', color: '#15803d', fontWeight: 500 }}
+                          >
+                            {isExempt ? '(Attendance Exempt - 100% Full Pay)' : '(0 Days LOP)'}
+                          </span>
+                        </span>
+                        <span style={{ fontWeight: 600, color: '#16a34a' }}>₹0 (None)</span>
                       </div>
                     )}
+
+                    {deductionsList.length > 0
+                      ? deductionsList.map((entry, idx) => (
+                          <div
+                            key={idx}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '0.625rem 0.875rem',
+                              borderBottom:
+                                idx < deductionsList.length - 1 ||
+                                (selectedItem.manualDeductions && selectedItem.manualDeductions > 0)
+                                  ? '1px solid #f1f5f9'
+                                  : 'none',
+                              backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fafafa',
+                              fontSize: '0.8125rem',
+                            }}
+                          >
+                            <span style={{ color: '#334155' }}>
+                              {entry.name} {entry.isStatutory && '(Statutory)'}
+                            </span>
+                            <span style={{ fontWeight: 600, color: '#dc2626' }}>
+                              - {formatCurrency(entry.amount)}
+                            </span>
+                          </div>
+                        ))
+                      : selectedItem.lopDays !== 0 && (
+                          <div
+                            style={{
+                              padding: '0.75rem',
+                              color: '#94a3b8',
+                              fontSize: '0.8125rem',
+                              textAlign: 'center',
+                            }}
+                          >
+                            No deductions
+                          </div>
+                        )}
+
+                    {/* Manual Deductions Display Entry */}
+                    {selectedItem.manualDeductions && selectedItem.manualDeductions > 0 ? (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.625rem 0.875rem',
+                          backgroundColor: '#fef2f2',
+                          borderTop: '1px solid #fecaca',
+                          fontSize: '0.8125rem',
+                        }}
+                      >
+                        <div>
+                          <div style={{ color: '#991b1b', fontWeight: 600 }}>
+                            Manual Special Deductions
+                          </div>
+                          {selectedItem.notes && (
+                            <div
+                              style={{
+                                fontSize: '0.6875rem',
+                                color: '#b91c1c',
+                                marginTop: '0.125rem',
+                              }}
+                            >
+                              Note: {selectedItem.notes}
+                            </div>
+                          )}
+                        </div>
+                        <span style={{ fontWeight: 700, color: '#dc2626' }}>
+                          - {formatCurrency(selectedItem.manualDeductions)}
+                        </span>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
@@ -1322,6 +1822,26 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                       - {formatCurrency(dedVal)}
                     </span>
                   </div>
+
+                  {/* Show Net Manual Adjustment if non-zero */}
+                  {selectedItem.manualAdjustment !== undefined &&
+                    selectedItem.manualAdjustment !== 0 && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          color: (selectedItem.manualAdjustment || 0) > 0 ? '#059669' : '#dc2626',
+                          fontWeight: 600,
+                        }}
+                      >
+                        <span>Net Manual Adjustment</span>
+                        <span>
+                          {(selectedItem.manualAdjustment || 0) > 0 ? '+' : ''}
+                          {formatCurrency(selectedItem.manualAdjustment || 0)}
+                        </span>
+                      </div>
+                    )}
+
                   <div
                     style={{
                       display: 'flex',
@@ -1336,6 +1856,20 @@ export default function PayrollRunDetailPage({ params }: { params: Promise<{ run
                     <span>Net Pay</span>
                     <span>{formatCurrency(netVal)}</span>
                   </div>
+
+                  {selectedItem.notes && (
+                    <div
+                      style={{
+                        marginTop: '0.35rem',
+                        paddingTop: '0.35rem',
+                        borderTop: '1px dashed #e2e8f0',
+                        fontSize: '0.75rem',
+                        color: '#64748b',
+                      }}
+                    >
+                      <span style={{ fontWeight: 600 }}>Adjustment Note:</span> {selectedItem.notes}
+                    </div>
+                  )}
                 </div>
               </div>
             );

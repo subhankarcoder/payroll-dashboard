@@ -53,6 +53,7 @@ export class Logger {
     this.minLevel = minLevel;
   }
 
+  // fallow-ignore-next-line unused-class-member
   public withContext(context: LogContext): Logger {
     return new Logger({ ...this.defaultContext, ...context }, this.minLevel);
   }
@@ -101,6 +102,7 @@ export class Logger {
     }
   }
 
+  // fallow-ignore-next-line unused-class-member
   public debug(message: string, context?: LogContext): void {
     this.emit('debug', message, context);
   }

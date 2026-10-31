@@ -1,5 +1,6 @@
 import 'server-only';
 
+// fallow-ignore-next-line unused-type
 export interface DbOrder {
   id: string;
   orderNumber: string;

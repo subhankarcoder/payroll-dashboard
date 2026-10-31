@@ -27,4 +27,5 @@ const parseClientEnv = () => {
 };
 
 export const clientEnv = parseClientEnv();
+// fallow-ignore-next-line unused-type
 export type ClientEnv = z.infer<typeof clientEnvSchema>;

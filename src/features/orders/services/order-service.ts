@@ -11,6 +11,7 @@ export class OrderService {
     return records as readonly Order[];
   }
 
+  // fallow-ignore-next-line unused-class-member
   public static async getOrder(id: string): Promise<Order | null> {
     logger.info('Fetching order by id', { orderId: id, operation: 'OrderService.getOrder' });
     const record = await db.getOrderById(id);

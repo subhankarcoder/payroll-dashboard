@@ -101,7 +101,18 @@ export interface PayrollRunItem {
     lastName: string;
     employeeCode: string;
     email: string;
+    designation?: string;
+    role?: string;
+    roles?: string[];
+    jobRoleName?: string;
+    isSuperAdmin?: boolean;
+    isExecutive?: boolean;
+    isExempt?: boolean;
+    attendanceExempt?: boolean;
   };
+  baseSalary?: number;
+  grossSalary?: number;
+  netSalary?: number;
   payableDays: number;
   presentDays: number;
   absentDays: number;
@@ -117,8 +128,14 @@ export interface PayrollRunItem {
   earningsJson: ItemBreakdownEntry[];
   deductionsJson: ItemBreakdownEntry[];
   employerContributionsJson: ItemBreakdownEntry[];
+  manualEarnings?: number;
+  manualDeductions?: number;
+  manualAdjustment?: number;
   remarks?: string;
   notes?: string;
+  isExecutive?: boolean;
+  isExempt?: boolean;
+  attendanceExempt?: boolean;
 }
 
 export interface Payslip {
@@ -154,5 +171,12 @@ export interface EmployeeSummary {
   email: string;
   department?: string;
   designation?: string;
+  jobRoleName?: string;
+  role?: string;
+  roles?: string[];
+  isSuperAdmin?: boolean;
+  isExecutive?: boolean;
+  isExempt?: boolean;
+  attendanceExempt?: boolean;
   status?: string;
 }

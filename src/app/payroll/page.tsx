@@ -37,7 +37,7 @@ import {
   computeRunAggregates,
   enrichRunWithItemAggregates,
 } from '@/features/payroll/utils/payroll-calculator';
-import { getAuthToken } from '@/lib/client/api-client';
+import { getAuthToken, getRefreshToken } from '@/lib/client/api-client';
 import type { PayrollRun, PayrollRunItem, SalaryComponent } from '@/types/payroll';
 import { formatCurrency, formatIndianNumber } from '@/lib/format-currency';
 
@@ -145,9 +145,10 @@ export default function PayrollDashboardPage() {
       console.warn('Dashboard data fetch notification:', err);
       const msg = err instanceof Error ? err.message : 'Could not fetch payroll data from backend';
       if (
-        msg.toLowerCase().includes('token') ||
-        msg.toLowerCase().includes('unauthorized') ||
-        msg.toLowerCase().includes('401')
+        (msg.toLowerCase().includes('unauthorized') ||
+          msg.toLowerCase().includes('session expired') ||
+          msg.toLowerCase().includes('401')) &&
+        !getRefreshToken()
       ) {
         router.push('/login');
         return;
@@ -157,8 +158,16 @@ export default function PayrollDashboardPage() {
   }, [selectedYear, selectedMonth, router]);
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const searchParams = new URLSearchParams(window.location.search);
+      const tab = searchParams.get('tab');
+      if (tab === 'advance-salary' || tab === 'advances') {
+        router.replace('/payroll/advances');
+        return;
+      }
+    }
     fetchDashboardData();
-  }, [fetchDashboardData]);
+  }, [fetchDashboardData, router]);
 
   const handlePrevMonth = () => {
     if (selectedMonth === 1) {

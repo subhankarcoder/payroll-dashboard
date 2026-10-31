@@ -1,15 +1,4 @@
 /**
- * Result pattern for robust, predictable error handling without throwing unhandled exceptions.
- */
-export type Result<T, E = Error> =
-  { readonly success: true; readonly data: T } | { readonly success: false; readonly error: E };
-
-export const createResult = {
-  ok: <T>(data: T): Result<T, never> => ({ success: true, data }),
-  fail: <E>(error: E): Result<never, E> => ({ success: false, error }),
-} as const;
-
-/**
  * Standard API error contract conforming to AGENTS.md Rule 43.
  */
 export interface ApiErrorResponse {
@@ -35,19 +24,4 @@ export interface ApiSuccessResponse<T> {
     readonly timestamp: string;
     readonly requestId: string;
   };
-}
-
-export type ApiResponse<T> = ApiSuccessResponse<T> | ApiErrorResponse;
-
-export interface PaginationParams {
-  readonly page: number;
-  readonly limit: number;
-}
-
-export interface PaginatedResult<T> {
-  readonly items: readonly T[];
-  readonly total: number;
-  readonly page: number;
-  readonly limit: number;
-  readonly totalPages: number;
 }

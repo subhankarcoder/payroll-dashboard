@@ -24,6 +24,7 @@ export interface CorrectPayrollItemInput {
   overtimeHours?: number;
   manualEarnings?: number;
   manualDeductions?: number;
+  manualAdjustment?: number;
   remarks?: string;
   notes?: string;
 }

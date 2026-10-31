@@ -7,7 +7,7 @@ import { SearchBar } from '@/components/molecules/search-bar';
 import {
   fetchApi,
   getAuthToken,
-  setAuthToken,
+  clearAuthTokens,
   setWorkspaceId,
   getWorkspaceId,
 } from '@/lib/client/api-client';
@@ -121,7 +121,7 @@ export function PayrollHeader() {
   };
 
   const handleSignOut = () => {
-    setAuthToken(null);
+    clearAuthTokens();
     if (typeof window !== 'undefined') {
       localStorage.removeItem('payroll_jwt_token');
       localStorage.removeItem('hr-dashboard-token');

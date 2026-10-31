@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { LoginForm } from '@/features/authentication';
+import { LoginForm } from '@/features/authentication/components/login-form';
 
 export const metadata: Metadata = {
   title: 'Sign In | Payroll Control Center',

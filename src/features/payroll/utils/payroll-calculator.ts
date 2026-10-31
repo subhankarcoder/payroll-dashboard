@@ -7,6 +7,7 @@ import type {
   SalaryComponentCategory,
   CalculationType,
   ItemBreakdownEntry,
+  EmployeeSummary,
 } from '@/types/payroll';
 import { SalaryStructureService } from '@/features/payroll/services/salary-structure.service';
 
@@ -14,6 +15,107 @@ import { SalaryStructureService } from '@/features/payroll/services/salary-struc
  * Cache for salary structures within the session to avoid redundant API calls
  */
 const structureCache = new Map<string, SalaryStructure | null>();
+
+/**
+ * Detects whether an employee holds executive status (e.g. CEO, Director, or SUPER_ADMIN security role)
+ */
+export function isExecutiveEmployee(
+  item: PayrollRunItem,
+  employee?: EmployeeSummary | null,
+): boolean {
+  const rawItem = item as unknown as Record<string, unknown>;
+  const rawEmp = (item.employee || employee || {}) as unknown as Record<string, unknown>;
+
+  // 1. Explicit boolean flags on item or employee object
+  if (
+    rawItem.isExecutive === true ||
+    rawItem.isExempt === true ||
+    rawItem.attendanceExempt === true ||
+    rawItem.is_executive === true ||
+    rawItem.is_exempt === true ||
+    rawItem.attendance_exempt === true ||
+    rawEmp.isSuperAdmin === true ||
+    rawEmp.is_super_admin === true ||
+    rawEmp.isExecutive === true ||
+    rawEmp.is_executive === true ||
+    rawEmp.isExempt === true ||
+    rawEmp.attendanceExempt === true ||
+    rawEmp.attendance_exempt === true
+  ) {
+    return true;
+  }
+
+  // 2. Roles array or role string (SUPER_ADMIN, EXECUTIVE, CEO, ADMIN)
+  const roleStr = String(rawEmp.role || rawItem.role || '').toUpperCase();
+  const rolesArr: string[] = Array.isArray(rawEmp.roles)
+    ? (rawEmp.roles as string[]).map((r) => String(r).toUpperCase())
+    : [];
+
+  if (
+    roleStr === 'SUPER_ADMIN' ||
+    roleStr === 'EXECUTIVE' ||
+    roleStr.includes('SUPER_ADMIN') ||
+    rolesArr.includes('SUPER_ADMIN') ||
+    rolesArr.includes('EXECUTIVE')
+  ) {
+    return true;
+  }
+
+  // 3. Designation or job role title matching executive leadership titles
+  const designation = String(
+    rawEmp.designation ||
+      rawEmp.jobRoleName ||
+      rawEmp.job_role_name ||
+      rawEmp.title ||
+      rawItem.designation ||
+      '',
+  ).toUpperCase();
+
+  const executiveKeywords = [
+    'CEO',
+    'CHIEF EXECUTIVE',
+    'CHIEF EXECUTIVE OFFICER',
+    'MANAGING DIRECTOR',
+    'SUPER ADMIN',
+    'SUPER_ADMIN',
+    'EXECUTIVE',
+    'PRESIDENT',
+    'VICE PRESIDENT',
+    'FOUNDER',
+    'CO-FOUNDER',
+    'CTO',
+    'CFO',
+    'COO',
+  ];
+
+  return executiveKeywords.some((kw) => designation === kw || designation.includes(kw));
+}
+
+/**
+ * Checks if an employee is Attendance Exempt (100% Full Pay)
+ * Condition: lopDays === 0 and payableDays === totalDays (or payableDays >= daysInPeriod) with executive status
+ */
+export function isAttendanceExempt(item: PayrollRunItem, daysInPeriod: number = 30): boolean {
+  const rawItem = item as unknown as Record<string, unknown>;
+  const lop = Number(item.lopDays ?? rawItem.lop_days ?? 0);
+  const payable = Number(item.payableDays ?? rawItem.payable_days ?? 0);
+
+  // If explicitly flagged as attendance exempt
+  if (
+    rawItem.attendanceExempt === true ||
+    rawItem.isExempt === true ||
+    item.attendanceExempt === true ||
+    item.isExempt === true ||
+    item.employee?.attendanceExempt === true ||
+    item.employee?.isExempt === true
+  ) {
+    return lop === 0;
+  }
+
+  // Attendance exempt requires 0 LOP, 100% payable days (>= daysInPeriod), and executive status
+  const hasFullAttendance = lop === 0 && payable >= daysInPeriod;
+  return hasFullAttendance && isExecutiveEmployee(item);
+}
 
 /**
  * Dynamically evaluates a single run item with its contractual salary structure
@@ -91,21 +193,38 @@ export function evaluateRunItemWithStructure(
       rawItem.employer_contributions_json,
   );
 
-  const rawGross = parseFloat(String(rawItem.grossEarnings ?? rawItem.gross_earnings ?? 0));
+  const rawGross = parseFloat(
+    String(rawItem.grossSalary ?? rawItem.grossEarnings ?? rawItem.gross_earnings ?? 0),
+  );
   const rawDeductions = parseFloat(
     String(rawItem.totalDeductions ?? rawItem.total_deductions ?? 0),
   );
-  const rawNet = parseFloat(String(rawItem.netPay ?? rawItem.net_pay ?? 0));
+  const rawNet = parseFloat(String(rawItem.netSalary ?? rawItem.netPay ?? rawItem.net_pay ?? 0));
   const rawEmployerCost = parseFloat(
     String(rawItem.totalEmployerCost ?? rawItem.total_employer_cost ?? (rawGross || 0)),
   );
+  const manualEarnings =
+    parseFloat(String(rawItem.manualEarnings ?? rawItem.manual_earnings ?? 0)) || 0;
+  const manualDeductions =
+    parseFloat(String(rawItem.manualDeductions ?? rawItem.manual_deductions ?? 0)) || 0;
+  const manualAdjustment =
+    parseFloat(
+      String(
+        rawItem.manualAdjustment ?? rawItem.manual_adjustment ?? manualEarnings - manualDeductions,
+      ),
+    ) || 0;
+  const notes =
+    (rawItem.notes as string) || (rawItem.remarks as string) || item.notes || item.remarks;
+
+  const isExempt = isAttendanceExempt({ ...item, lopDays, payableDays }, daysInPeriod);
 
   // If the run item already has calculated breakdown or non-zero gross from backend calculation engine,
   // we MUST preserve and display the actual calculated values!
   if (existingEarnings.length > 0 || rawGross > 0) {
     const gross = rawGross || existingEarnings.reduce((sum, e) => sum + e.amount, 0);
     const deductions = rawDeductions || existingDeductions.reduce((sum, d) => sum + d.amount, 0);
-    const net = rawNet || gross - deductions;
+    // Recalculating netSalary = grossSalary + manualEarnings - totalDeductions - manualDeductions
+    const net = rawNet || gross + manualEarnings - deductions - manualDeductions;
     const employerCost = rawEmployerCost || gross;
 
     return {
@@ -116,6 +235,14 @@ export function evaluateRunItemWithStructure(
       grossEarnings: gross,
       totalDeductions: deductions,
       netPay: net,
+      manualEarnings,
+      manualDeductions,
+      manualAdjustment,
+      notes,
+      remarks: notes,
+      isExecutive: isExecutiveEmployee(item),
+      isExempt,
+      attendanceExempt: isExempt,
       totalEmployerCost: employerCost,
       earningsJson: existingEarnings,
       deductionsJson: existingDeductions,
@@ -132,7 +259,15 @@ export function evaluateRunItemWithStructure(
       lopDays,
       grossEarnings: 0,
       totalDeductions: 0,
-      netPay: 0,
+      netPay: manualAdjustment,
+      manualEarnings,
+      manualDeductions,
+      manualAdjustment,
+      notes,
+      remarks: notes,
+      isExecutive: isExecutiveEmployee(item),
+      isExempt,
+      attendanceExempt: isExempt,
       totalEmployerCost: 0,
       earningsJson: [],
       deductionsJson: [],
@@ -206,15 +341,24 @@ export function evaluateRunItemWithStructure(
 
   const grossEarnings = computedEarnings.reduce((sum, e) => sum + e.amount, 0);
   const totalDeductions = computedDeductions.reduce((sum, d) => sum + d.amount, 0);
-  const netPay = grossEarnings - totalDeductions;
+  const netPay = grossEarnings + manualEarnings - totalDeductions - manualDeductions;
 
   return {
     ...item,
     payableDays,
     presentDays,
+    lopDays,
     grossEarnings,
     totalDeductions,
     netPay,
+    manualEarnings,
+    manualDeductions,
+    manualAdjustment,
+    notes,
+    remarks: notes,
+    isExecutive: isExecutiveEmployee(item),
+    isExempt,
+    attendanceExempt: isExempt,
     totalEmployerCost: grossEarnings,
     earningsJson: computedEarnings,
     deductionsJson: computedDeductions,

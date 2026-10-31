@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const orderItemSchema = z.object({
+const orderItemSchema = z.object({
   productName: z.string().min(2, { message: 'Product name must be at least 2 characters' }),
   quantity: z.number().int().positive({ message: 'Quantity must be greater than zero' }),
   unitPrice: z.number().positive({ message: 'Unit price must be greater than zero' }),
@@ -18,4 +18,5 @@ export const updateOrderStatusSchema = z.object({
 });
 
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
+// fallow-ignore-next-line unused-type
 export type UpdateOrderStatusInput = z.infer<typeof updateOrderStatusSchema>;
